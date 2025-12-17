@@ -1,0 +1,9 @@
+---
+- name: Configure Frontend Server
+  hosts: frontend
+  become: yes
+
+  roles:
+    - common
+    - docker
+    - frontend

@@ -1,0 +1,48 @@
+services:
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: jdbc:postgresql://{{ vm3_database_ip }}:{{ postgresql_port }}/{{ db_name }}
+      DATABASE_USER: {{ db_user }}
+      DATABASE_PASSWORD: {{ db_password }}
+    networks:
+      - backend
+    expose:
+      - '{{ springboot_port }}'
+
+  parser:
+    build: ./parser
+    restart: unless-stopped
+    environment:
+      MINIO_ENDPOINT: http://{{ vm4_storage_ip }}:{{ minio_api_port }}
+      MINIO_ACCESS_KEY: {{ minio_access_key }}
+      MINIO_SECRET_KEY: {{ minio_secret_key }}
+      MINIO_BUCKET: {{ minio_bucket_name }}
+    networks:
+      - backend
+    expose:
+      - '{{ nestjs_port }}'
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+{% if enable_tls %}
+      - '443:443'
+{% endif %}
+    volumes:
+      - ./nginx/backend.conf:/etc/nginx/conf.d/default.conf:ro
+{% if enable_tls %}
+      - ./nginx/certs:/etc/nginx/certs:ro
+{% endif %}
+    networks:
+      - backend
+    depends_on:
+      - api
+      - parser
+
+networks:
+  backend:
+    driver: bridge

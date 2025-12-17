@@ -1,0 +1,19 @@
+---
+# Main playbook - orchestrates all infrastructure deployment
+# Execution order respects dependencies:
+# 1. Database (PostgreSQL) - must be ready first
+# 2. Storage (MinIO) - must be ready for parser
+# 3. Backend - depends on DB and storage
+# 4. Frontend - can run last
+
+- name: Deploy Database Server (VM3)
+  import_playbook: database.yml
+
+- name: Deploy Storage Server (VM4)
+  import_playbook: storage.yml
+
+- name: Deploy Backend Server (VM2)
+  import_playbook: backend.yml
+
+- name: Deploy Frontend Server (VM1)
+  import_playbook: frontend.yml

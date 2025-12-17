@@ -1,0 +1,9 @@
+---
+# Storage-specific variables
+# ==========================
+
+# Allowed ports for UFW (MinIO only from backend)
+ufw_allowed_ports:
+  - { port: 22, proto: tcp, from: any }
+  - { port: 9000, proto: tcp, from: "{{ vm2_backend_ip }}" }
+  - { port: 9001, proto: tcp, from: "{{ vm2_backend_ip }}" }

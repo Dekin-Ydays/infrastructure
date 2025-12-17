@@ -1,0 +1,202 @@
+---
+- name: Health Check - All Services
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Display host information
+      ansible.builtin.debug:
+        msg: "Checking {{ inventory_hostname }} ({{ ansible_host }})"
+
+- name: Health Check - Frontend
+  hosts: frontend
+  become: yes
+
+  tasks:
+    - name: Check if Docker is running
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+      check_mode: yes
+      register: docker_status
+
+    - name: Check Docker service status
+      ansible.builtin.debug:
+        msg: "Docker is {{ 'running' if docker_status.status.ActiveState == 'active' else 'NOT running' }}"
+
+    - name: Check frontend container status
+      ansible.builtin.command:
+        cmd: docker compose ps --format json
+        chdir: "{{ frontend_dir }}"
+      register: frontend_containers
+      changed_when: false
+      failed_when: false
+
+    - name: Test HTTP connectivity to frontend
+      ansible.builtin.uri:
+        url: "http://localhost:80"
+        method: GET
+        status_code: [200, 301, 302]
+        timeout: 10
+      register: frontend_http
+      failed_when: false
+
+    - name: Report frontend HTTP status
+      ansible.builtin.debug:
+        msg: "Frontend HTTP: {{ 'OK' if frontend_http.status is defined and frontend_http.status in [200, 301, 302] else 'FAILED' }}"
+
+- name: Health Check - Backend
+  hosts: backend
+  become: yes
+
+  tasks:
+    - name: Check if Docker is running
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+      check_mode: yes
+      register: docker_status
+
+    - name: Check Docker service status
+      ansible.builtin.debug:
+        msg: "Docker is {{ 'running' if docker_status.status.ActiveState == 'active' else 'NOT running' }}"
+
+    - name: Check backend container status
+      ansible.builtin.command:
+        cmd: docker compose ps --format json
+        chdir: "{{ backend_dir }}"
+      register: backend_containers
+      changed_when: false
+      failed_when: false
+
+    - name: Test API endpoint via backend
+      ansible.builtin.uri:
+        url: "http://localhost:80/api/health"
+        method: GET
+        status_code: [200, 404]
+        timeout: 10
+      register: api_http
+      failed_when: false
+
+    - name: Report API HTTP status
+      ansible.builtin.debug:
+        msg: "API HTTP: {{ 'OK' if api_http.status is defined and api_http.status in [200, 404] else 'FAILED' }}"
+
+    - name: Test WebSocket endpoint availability
+      ansible.builtin.uri:
+        url: "http://localhost:80/ws/"
+        method: GET
+        status_code: [101, 200, 400, 426]
+        timeout: 10
+      register: ws_http
+      failed_when: false
+
+    - name: Report WebSocket status
+      ansible.builtin.debug:
+        msg: "WebSocket endpoint: {{ 'Available' if ws_http.status is defined else 'FAILED' }}"
+
+- name: Health Check - Database
+  hosts: database
+  become: yes
+
+  tasks:
+    - name: Check if PostgreSQL is running
+      ansible.builtin.systemd:
+        name: postgresql
+        state: started
+      check_mode: yes
+      register: pg_status
+
+    - name: Check PostgreSQL service status
+      ansible.builtin.debug:
+        msg: "PostgreSQL is {{ 'running' if pg_status.status.ActiveState == 'active' else 'NOT running' }}"
+
+    - name: Test PostgreSQL connectivity
+      become_user: postgres
+      community.postgresql.postgresql_ping:
+        db: "{{ db_name }}"
+      register: pg_ping
+      failed_when: false
+
+    - name: Report PostgreSQL connectivity
+      ansible.builtin.debug:
+        msg: "PostgreSQL connection: {{ 'OK' if pg_ping.is_available | default(false) else 'FAILED' }}"
+
+    - name: Check PostgreSQL is listening on port
+      ansible.builtin.wait_for:
+        port: "{{ postgresql_port }}"
+        timeout: 5
+      register: pg_port
+      failed_when: false
+
+    - name: Report PostgreSQL port status
+      ansible.builtin.debug:
+        msg: "PostgreSQL port {{ postgresql_port }}: {{ 'OPEN' if pg_port.state is defined and pg_port.state == 'started' else 'CLOSED' }}"
+
+- name: Health Check - Storage
+  hosts: storage
+  become: yes
+
+  tasks:
+    - name: Check if MinIO is running
+      ansible.builtin.systemd:
+        name: minio
+        state: started
+      check_mode: yes
+      register: minio_status
+
+    - name: Check MinIO service status
+      ansible.builtin.debug:
+        msg: "MinIO is {{ 'running' if minio_status.status.ActiveState == 'active' else 'NOT running' }}"
+
+    - name: Check MinIO API port
+      ansible.builtin.wait_for:
+        port: "{{ minio_api_port }}"
+        timeout: 5
+      register: minio_api
+      failed_when: false
+
+    - name: Report MinIO API port status
+      ansible.builtin.debug:
+        msg: "MinIO API port {{ minio_api_port }}: {{ 'OPEN' if minio_api.state is defined and minio_api.state == 'started' else 'CLOSED' }}"
+
+    - name: Test MinIO HTTP connectivity
+      ansible.builtin.uri:
+        url: "http://localhost:{{ minio_api_port }}/minio/health/live"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: minio_http
+      failed_when: false
+
+    - name: Report MinIO HTTP status
+      ansible.builtin.debug:
+        msg: "MinIO health: {{ 'OK' if minio_http.status is defined and minio_http.status == 200 else 'FAILED' }}"
+
+    - name: Check bucket exists
+      ansible.builtin.command:
+        cmd: mc ls local/{{ minio_bucket_name }}
+      register: bucket_check
+      changed_when: false
+      failed_when: false
+
+    - name: Report bucket status
+      ansible.builtin.debug:
+        msg: "Bucket '{{ minio_bucket_name }}': {{ 'EXISTS' if bucket_check.rc == 0 else 'NOT FOUND' }}"
+
+- name: Health Check Summary
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  tasks:
+    - name: Display summary
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Health Check Complete
+          ========================================
+          Review the output above for service status.
+          All services should show 'running' or 'OK'.
+          ========================================

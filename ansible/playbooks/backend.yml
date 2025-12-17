@@ -1,0 +1,9 @@
+---
+- name: Configure Backend Server
+  hosts: backend
+  become: yes
+
+  roles:
+    - common
+    - docker
+    - backend

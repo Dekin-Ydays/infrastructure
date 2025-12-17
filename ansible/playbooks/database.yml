@@ -1,0 +1,8 @@
+---
+- name: Configure Database Server
+  hosts: database
+  become: yes
+
+  roles:
+    - common
+    - postgresql

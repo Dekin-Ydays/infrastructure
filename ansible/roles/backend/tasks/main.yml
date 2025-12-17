@@ -1,0 +1,66 @@
+---
+- name: Create backend directory structure
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0755'
+  loop:
+    - "{{ backend_dir }}"
+    - "{{ backend_dir }}/api"
+    - "{{ backend_dir }}/parser"
+    - "{{ backend_dir }}/nginx"
+    - "{{ backend_dir }}/nginx/certs"
+
+- name: Clone API repository
+  ansible.builtin.git:
+    repo: "{{ api_repo_url }}"
+    dest: "{{ backend_dir }}/api"
+    version: "{{ api_repo_branch }}"
+    force: yes
+  become_user: "{{ deploy_user }}"
+  when: api_repo_url | length > 0
+
+- name: Clone parser repository
+  ansible.builtin.git:
+    repo: "{{ parser_repo_url }}"
+    dest: "{{ backend_dir }}/parser"
+    version: "{{ parser_repo_branch }}"
+    force: yes
+  become_user: "{{ deploy_user }}"
+  when: parser_repo_url | length > 0
+
+- name: Create .env file for backend
+  ansible.builtin.template:
+    src: .env.j2
+    dest: "{{ backend_dir }}/.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0600'
+  notify: restart backend containers
+
+- name: Create nginx backend configuration
+  ansible.builtin.template:
+    src: backend.conf.j2
+    dest: "{{ backend_dir }}/nginx/backend.conf"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0644'
+  notify: restart backend containers
+
+- name: Create docker-compose.yml for backend
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ backend_dir }}/docker-compose.yml"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0644'
+  notify: restart backend containers
+
+- name: Build and start backend containers
+  community.docker.docker_compose_v2:
+    project_src: "{{ backend_dir }}"
+    state: present
+    build: always
+  become_user: "{{ deploy_user }}"
