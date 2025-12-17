@@ -1,4 +1,4 @@
-```mermaidjs
+```mermaid
 flowchart TB
     subgraph VM1["VM1 - Frontend"]
         front["frontend (Expo)"]
