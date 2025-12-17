@@ -32,3 +32,4 @@ xunit.xml
 !.yarn/versions
 resources/contentCreator/createDevcontainer/.devcontainer
 resources/contentCreator/createDevfile/devfile-template.txt
+.direnv/
