@@ -1,0 +1,72 @@
+---
+# Common Variables for all hosts
+# ================================
+
+# Timezone configuration
+timezone: "Europe/Paris"
+
+# Deploy user (the user Ansible connects as and runs services)
+deploy_user: deploy
+
+# Swap configuration
+swap_size_mb: 2048
+enable_swap: true
+
+# Base packages to install on all hosts
+base_packages:
+  - curl
+  - wget
+  - git
+  - ufw
+  - htop
+  - vim
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+
+# Git repositories (REQUIRED - must be set)
+frontend_repo_url: ""  # e.g., https://github.com/org/frontend.git
+api_repo_url: ""       # e.g., https://github.com/org/api.git
+parser_repo_url: ""    # e.g., https://github.com/org/parser.git
+
+# Git branches (defaults to main)
+frontend_repo_branch: "main"
+api_repo_branch: "main"
+parser_repo_branch: "main"
+
+# Database configuration (REQUIRED - use ansible-vault for password)
+db_name: "videoparser"
+db_user: "videoparser"
+db_password: "{{ vault_db_password }}"  # Define in vault
+
+# MinIO configuration (REQUIRED - use ansible-vault for secrets)
+minio_access_key: "{{ vault_minio_access_key }}"  # Define in vault
+minio_secret_key: "{{ vault_minio_secret_key }}"  # Define in vault
+minio_bucket_name: "videos"
+
+# Network configuration (auto-populated from inventory)
+vm2_backend_ip: "{{ hostvars['vm2_backend']['ansible_host'] }}"
+vm3_database_ip: "{{ hostvars['vm3_database']['ansible_host'] }}"
+vm4_storage_ip: "{{ hostvars['vm4_storage']['ansible_host'] }}"
+
+# Application ports
+springboot_port: 8080
+nestjs_port: 3000
+minio_api_port: 9000
+minio_console_port: 9001
+postgresql_port: 5432
+
+# PostgreSQL version
+postgresql_version: "16"
+
+# TLS Configuration (optional)
+enable_tls: false
+tls_cert_path: ""
+tls_key_path: ""
+
+# Application directories
+app_base_dir: "/opt/app"
+frontend_dir: "{{ app_base_dir }}/frontend"
+backend_dir: "{{ app_base_dir }}/backend"
+minio_data_dir: "/data/minio"

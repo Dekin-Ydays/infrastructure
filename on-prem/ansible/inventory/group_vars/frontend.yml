@@ -1,0 +1,9 @@
+---
+# Frontend-specific variables
+# ===========================
+
+# Allowed ports for UFW
+ufw_allowed_ports:
+  - { port: 22, proto: tcp, from: any }
+  - { port: 80, proto: tcp, from: any }
+  - { port: 443, proto: tcp, from: any }

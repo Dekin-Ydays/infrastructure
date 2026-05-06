@@ -1,0 +1,9 @@
+services:
+  frontend:
+    build: ./app
+    restart: unless-stopped
+    ports:
+      - '80:80'
+{% if enable_tls %}
+      - '443:443'
+{% endif %}

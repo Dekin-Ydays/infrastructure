@@ -1,0 +1,8 @@
+---
+- name: Configure Storage Server
+  hosts: storage
+  become: yes
+
+  roles:
+    - common
+    - minio

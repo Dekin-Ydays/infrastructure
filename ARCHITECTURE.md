@@ -148,6 +148,250 @@ aws configure --profile dekin-prod
 
 ```bash
 aws sts get-caller-identity --profile dekin-prod
+## VM Specifications
+
+Assume the following hostnames/IPs will be provided via inventory:
+
+- `vm1_frontend` - Frontend server
+- `vm2_backend` - Backend services server
+- `vm3_database` - PostgreSQL server
+- `vm4_storage` - MinIO object storage server
+
+Base OS: Ubuntu 22.04 LTS (or Debian 12)
+
+## Requirements by VM
+
+### VM1 - Frontend Server
+
+1. **Docker environment**
+   - Install Docker CE from official repository
+   - Install Docker Compose plugin
+   - Create dedicated `docker` group and add deploy user
+
+2. **Expo deployment (Dockerized)**
+   - Clone the frontend repository (parameterized via variable `frontend_repo_url`)
+   - Repository must contain a `Dockerfile` with multi-stage build:
+     - Stage 1: Node 20 Alpine, install pnpm, build Expo web export
+     - Stage 2: Nginx Alpine, copy built assets, serve static files
+   - Use Docker Compose for orchestration
+   - Container exposes port 80
+
+3. **Docker Compose configuration**
+
+   ```yaml
+   services:
+     frontend:
+       build: .
+       restart: unless-stopped
+       ports:
+         - '80:80'
+   ```
+
+4. **Expected Dockerfile structure in repo**
+
+   ```dockerfile
+   # Build stage
+   FROM node:20-alpine AS builder
+   RUN corepack enable && corepack prepare pnpm@latest --activate
+   WORKDIR /app
+   COPY package.json pnpm-lock.yaml ./
+   RUN pnpm install --frozen-lockfile
+   COPY . .
+   RUN pnpm expo export:web
+
+   # Production stage
+   FROM nginx:alpine
+   COPY --from=builder /app/dist /usr/share/nginx/html
+   COPY nginx.conf /etc/nginx/conf.d/default.conf
+   EXPOSE 80
+   ```
+
+### VM2 - Backend Server
+
+1. **Docker environment**
+   - Install Docker CE from official repository
+   - Install Docker Compose plugin
+   - Create dedicated `docker` group and add deploy user
+
+2. **Spring Boot API (Dockerized)**
+   - Clone the API repository (parameterized via `api_repo_url`)
+   - Repository must contain a `Dockerfile` with multi-stage build
+   - Container runs on port 8080 (internal network only)
+
+3. **NestJS Video Parser (Dockerized)**
+   - Clone the parser repository (parameterized via `parser_repo_url`)
+   - Repository must contain a `Dockerfile` with multi-stage build
+   - Container runs on port 3000 (internal network only)
+
+4. **Docker Compose configuration**
+
+   ```yaml
+   services:
+     api:
+       build: ./api
+       restart: unless-stopped
+       environment:
+         DATABASE_URL: jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}
+         DATABASE_USER: ${DB_USER}
+         DATABASE_PASSWORD: ${DB_PASSWORD}
+       networks:
+         - backend
+       expose:
+         - '8080'
+
+     parser:
+       build: ./parser
+       restart: unless-stopped
+       environment:
+         MINIO_ENDPOINT: http://${MINIO_HOST}:9000
+         MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+         MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+         MINIO_BUCKET: ${MINIO_BUCKET}
+       networks:
+         - backend
+       expose:
+         - '3000'
+
+     nginx:
+       image: nginx:alpine
+       restart: unless-stopped
+       ports:
+         - '80:80'
+         - '443:443'
+       volumes:
+         - ./nginx/backend.conf:/etc/nginx/conf.d/default.conf:ro
+         - ./nginx/certs:/etc/nginx/certs:ro # Optional TLS
+       networks:
+         - backend
+       depends_on:
+         - api
+         - parser
+
+   networks:
+     backend:
+       driver: bridge
+   ```
+
+5. **Nginx reverse proxy configuration**
+   Template `nginx/backend.conf`:
+
+   ```nginx
+   upstream api {
+       server api:8080;
+   }
+
+   upstream parser {
+       server parser:3000;
+   }
+
+   server {
+       listen 80;
+       server_name _;
+
+       location /api/ {
+           proxy_pass http://api/;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+
+       location /ws/ {
+           proxy_pass http://parser/;
+           proxy_http_version 1.1;
+           proxy_set_header Upgrade $http_upgrade;
+           proxy_set_header Connection "upgrade";
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+           proxy_read_timeout 86400;
+       }
+   }
+   ```
+
+6. **Expected Dockerfile for Spring Boot (in api repo)**
+
+   ```dockerfile
+   # Build stage
+   FROM eclipse-temurin:21-jdk-alpine AS builder
+   WORKDIR /app
+   COPY . .
+   RUN ./mvnw clean package -DskipTests
+   # Or for Gradle: RUN ./gradlew build -x test
+
+   # Production stage
+   FROM eclipse-temurin:21-jre-alpine
+   WORKDIR /app
+   COPY --from=builder /app/target/*.jar app.jar
+   EXPOSE 8080
+   ENTRYPOINT ["java", "-jar", "app.jar"]
+   ```
+
+7. **Expected Dockerfile for NestJS (in parser repo)**
+
+   ```dockerfile
+   # Build stage
+   FROM node:20-alpine AS builder
+   RUN corepack enable && corepack prepare pnpm@latest --activate
+   WORKDIR /app
+   COPY package.json pnpm-lock.yaml ./
+   RUN pnpm install --frozen-lockfile
+   COPY . .
+   RUN pnpm build
+
+   # Production stage
+   FROM node:20-alpine
+   RUN corepack enable && corepack prepare pnpm@latest --activate
+   WORKDIR /app
+   COPY --from=builder /app/dist ./dist
+   COPY --from=builder /app/node_modules ./node_modules
+   COPY --from=builder /app/package.json ./
+   EXPOSE 3000
+   CMD ["node", "dist/main.js"]
+   ```
+
+### VM3 - PostgreSQL Database
+
+1. **PostgreSQL 16**
+   - Install from official PostgreSQL APT repository
+   - Create database: `{{ db_name }}`
+   - Create user: `{{ db_user }}` with password `{{ db_password }}`
+   - Grant all privileges on database to user
+
+2. **Network configuration**
+   - Configure `postgresql.conf`: `listen_addresses = '*'`
+   - Configure `pg_hba.conf`: Allow connections from VM2 backend IP
+     ```
+     host    {{ db_name }}    {{ db_user }}    {{ vm2_backend_ip }}/32    scram-sha-256
+     ```
+
+3. **Security hardening**
+   - Disable remote root login
+   - Configure UFW: Allow port 5432 only from VM2
+
+### VM4 - MinIO Object Storage
+
+1. **MinIO server**
+   - Download and install MinIO binary
+   - Create dedicated `minio` user
+   - Create data directory `/data/minio`
+   - Create systemd service `minio.service`
+   - Configure environment:
+     - `MINIO_ROOT_USER={{ minio_access_key }}`
+     - `MINIO_ROOT_PASSWORD={{ minio_secret_key }}`
+   - Run on port 9000 (API) and 9001 (Console)
+
+2. **Initial setup**
+   - Install MinIO client (mc)
+   - Create bucket: `{{ minio_bucket_name }}`
+   - Set bucket policy as needed (private by default)
+
+3. **Network configuration**
+   - Configure UFW: Allow port 9000 only from VM2
+
+## On-Prem Ansible Project Structure
+
 ```
 
 Contrôler que `Account` est bien celui de ton tenant AWS.
@@ -165,6 +409,35 @@ db_instance_class    = "db.t4g.small"
 db_allocated_storage = 100
 ssh_public_key       = "ssh-ed25519 AAAA..."
 ssh_allowed_cidr     = "<TON_IP>/32"
+on-prem/
+├── Makefile
+├── README.md
+├── ansible/
+│   ├── ansible.cfg
+│   ├── inventory/
+│   │   ├── hosts.yml
+│   │   └── group_vars/
+│   │       ├── all.yml          # Common variables
+│   │       ├── frontend.yml
+│   │       ├── backend.yml
+│   │       ├── database.yml
+│   │       └── storage.yml
+│   ├── playbooks/
+│   │   ├── site.yml             # Main playbook (imports all)
+│   │   ├── frontend.yml
+│   │   ├── backend.yml
+│   │   ├── database.yml
+│   │   └── storage.yml
+│   ├── roles/
+│   │   ├── common/
+│   │   ├── docker/
+│   │   ├── frontend/
+│   │   ├── backend/
+│   │   ├── postgresql/
+│   │   └── minio/
+│   └── files/
+│       └── .dockerignore
+└── inventory/               # Legacy root-level inventory, kept with on-prem option
 ```
 
 ### 6.5 Provisionner

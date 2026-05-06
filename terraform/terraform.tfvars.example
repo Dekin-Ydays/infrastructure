@@ -1,10 +1,41 @@
-region         = "eu-west-3"
-aws_profile    = "default"
-project        = "dekin"
-instance_type  = "t3.medium"
+# Prefer setting DIGITALOCEAN_TOKEN in your shell instead of putting it here.
+# do_token = "dop_v1_..."
 
-# Paste the contents of your ~/.ssh/id_ed25519.pub (or similar) here.
-ssh_public_key = "ssh-ed25519 AAAA... you@host"
+project = "dekin-hosted"
+region  = "fra1"
 
-# Lock SSH down to your IP, e.g. "203.0.113.42/32".
-ssh_allowed_cidr = "0.0.0.0/0"
+# The parser image includes Python + MediaPipe; 4 GB RAM is the baseline.
+droplet_size = "s-2vcpu-4gb"
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# Public key for the GitHub Actions deploy user.
+# Generate a dedicated key and put the private half in each app repo as
+# DEPLOY_SSH_PRIVATE_KEY.
+deploy_ssh_public_key = "ssh-ed25519 AAAA... deploy@example"
+
+# Replace with your current IP/CIDR. Avoid world-open SSH except for throwaway tests.
+ssh_allowed_cidrs = ["203.0.113.10/32"]
+
+# Empty means Terraform outputs https://<droplet-ip>.sslip.io.
+# Set this only after you manually create DNS pointing at the Droplet.
+backend_hostname = ""
+
+# Optional Let's Encrypt account email.
+acme_email = "you@example.com"
+
+# Initial images pulled on first boot. CI deploys replace these tags.
+server_image = "ghcr.io/your-org/dekin-server:latest"
+parser_image = "ghcr.io/your-org/dekin-video-parser:latest"
+
+# Generated Vercel domains are supported by wildcard patterns in the app changes.
+frontend_origin_patterns = [
+  "https://*.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:8081",
+  "http://localhost:8082",
+  "http://localhost:19006",
+]
+
+data_volume_size_gb = 10
+swap_size_mb        = 2048

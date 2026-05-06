@@ -1,0 +1,344 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+  - lsb-release
+  - ufw
+
+write_files:
+  - path: /usr/local/bin/dekin-bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      export DEBIAN_FRONTEND=noninteractive
+
+      APP_DIR="${app_dir}"
+      DATA_DIR="${data_dir}"
+      BACKEND_HOST="${backend_hostname}"
+      ACME_EMAIL="${acme_email}"
+      VOLUME_DEV="/dev/disk/by-id/scsi-0DO_Volume_${data_volume_name}"
+
+      if [ -z "$BACKEND_HOST" ]; then
+        PUBLIC_IPV4="$(curl -fsS http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)"
+        BACKEND_HOST="$PUBLIC_IPV4.sslip.io"
+      fi
+
+      if [ "${swap_size_mb}" -gt 0 ] && [ ! -f /swapfile ]; then
+        fallocate -l "${swap_size_mb}M" /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        echo "/swapfile none swap sw 0 0" >> /etc/fstab
+        printf "vm.swappiness=10\n" > /etc/sysctl.d/99-dekin-swap.conf
+        sysctl -p /etc/sysctl.d/99-dekin-swap.conf
+      fi
+
+      if ! command -v docker >/dev/null 2>&1; then
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+        . /etc/os-release
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        systemctl enable --now docker
+      fi
+
+      if ! command -v caddy >/dev/null 2>&1; then
+        curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+          | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
+          > /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update
+        apt-get install -y caddy
+      fi
+
+      for attempt in $(seq 1 30); do
+        [ -b "$VOLUME_DEV" ] && break
+        sleep 2
+      done
+      if [ ! -b "$VOLUME_DEV" ]; then
+        echo "Persistent volume device $VOLUME_DEV did not appear within 60s" >&2
+        exit 1
+      fi
+      if ! blkid "$VOLUME_DEV" >/dev/null 2>&1; then
+        mkfs.ext4 -L dekin-data "$VOLUME_DEV"
+      fi
+
+      mkdir -p "$DATA_DIR"
+      if ! grep -q "^$VOLUME_DEV " /etc/fstab; then
+        echo "$VOLUME_DEV $DATA_DIR ext4 defaults,nofail,discard 0 2" >> /etc/fstab
+      fi
+      mountpoint -q "$DATA_DIR" || mount "$DATA_DIR"
+
+      mkdir -p "$APP_DIR" "$DATA_DIR/postgres" "$DATA_DIR/minio" "$DATA_DIR/parser"
+      chmod 700 "$DATA_DIR/postgres"
+      chmod 700 "$DATA_DIR/minio"
+      chmod 777 "$DATA_DIR/parser"
+
+      id deploy >/dev/null 2>&1 || useradd --create-home --shell /bin/bash deploy
+      install -d -o deploy -g deploy -m 0700 /home/deploy/.ssh
+      cat > /home/deploy/.ssh/authorized_keys <<'KEY'
+      ${deploy_ssh_public_key}
+      KEY
+      chown deploy:deploy /home/deploy/.ssh/authorized_keys
+      chmod 0600 /home/deploy/.ssh/authorized_keys
+
+      cat > "$APP_DIR/.env" <<ENV
+      BACKEND_HOST=$BACKEND_HOST
+      FRONTEND_ORIGIN_PATTERNS=${frontend_origin_patterns}
+      DB_NAME=${db_name}
+      DB_USER=${db_user}
+      DB_PASSWORD=${db_password}
+      MINIO_ACCESS_KEY=${minio_access_key}
+      MINIO_SECRET_KEY=${minio_secret_key}
+      MINIO_BUCKET=${minio_bucket}
+      DATA_DIR=$DATA_DIR
+      ENV
+      chmod 600 "$APP_DIR/.env"
+
+      cat > "$APP_DIR/deploy.env" <<ENV
+      COMPOSE_PROJECT_NAME=${project}
+      DEKIN_SERVER_IMAGE=${server_image}
+      DEKIN_PARSER_IMAGE=${parser_image}
+      ENV
+      chmod 600 "$APP_DIR/deploy.env"
+
+      cat > "$APP_DIR/compose.yml" <<'COMPOSE'
+      services:
+        postgres:
+          image: postgres:16-alpine
+          restart: unless-stopped
+          environment:
+            POSTGRES_DB: $${DB_NAME}
+            POSTGRES_USER: $${DB_USER}
+            POSTGRES_PASSWORD: $${DB_PASSWORD}
+          volumes:
+            - $${DATA_DIR}/postgres:/var/lib/postgresql/data
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U $${DB_USER} -d $${DB_NAME}"]
+            interval: 10s
+            timeout: 5s
+            retries: 20
+
+        minio:
+          image: minio/minio:latest
+          restart: unless-stopped
+          command: server /data --console-address ":9001"
+          environment:
+            MINIO_ROOT_USER: $${MINIO_ACCESS_KEY}
+            MINIO_ROOT_PASSWORD: $${MINIO_SECRET_KEY}
+          volumes:
+            - $${DATA_DIR}/minio:/data
+          healthcheck:
+            test:
+              - CMD-SHELL
+              - "mc alias set local http://localhost:9000 $${MINIO_ACCESS_KEY} $${MINIO_SECRET_KEY} >/dev/null 2>&1 && mc ready local"
+            interval: 10s
+            timeout: 5s
+            retries: 20
+
+        parser:
+          image: $${DEKIN_PARSER_IMAGE}
+          restart: unless-stopped
+          env_file:
+            - .env
+          environment:
+            PORT: "3000"
+            DATABASE_URL: "file:/app/data/prod.db"
+            MINIO_ENDPOINT: "http://minio:9000"
+            MINIO_ACCESS_KEY: $${MINIO_ACCESS_KEY}
+            MINIO_SECRET_KEY: $${MINIO_SECRET_KEY}
+            MINIO_BUCKET: $${MINIO_BUCKET}
+            MINIO_REGION: "us-east-1"
+            CORS_ORIGINS: $${FRONTEND_ORIGIN_PATTERNS}
+          depends_on:
+            minio:
+              condition: service_healthy
+          volumes:
+            - $${DATA_DIR}/parser:/app/data
+          healthcheck:
+            test:
+              - CMD-SHELL
+              - "node -e \"fetch('http://localhost:3000/health-check').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+            interval: 15s
+            timeout: 5s
+            retries: 20
+
+        server:
+          image: $${DEKIN_SERVER_IMAGE}
+          restart: unless-stopped
+          environment:
+            PORT: "8090"
+            DB_URL: "jdbc:postgresql://postgres:5432/$${DB_NAME}"
+            DB_USERNAME: $${DB_USER}
+            DB_PASSWORD: $${DB_PASSWORD}
+            APP_CORS_ALLOWED_ORIGIN_PATTERNS: $${FRONTEND_ORIGIN_PATTERNS}
+          depends_on:
+            postgres:
+              condition: service_healthy
+
+        caddy:
+          image: caddy:2-alpine
+          restart: unless-stopped
+          ports:
+            - "80:80"
+            - "443:443"
+          volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy_data:/data
+            - caddy_config:/config
+          depends_on:
+            parser:
+              condition: service_healthy
+            server:
+              condition: service_started
+
+      volumes:
+        caddy_data:
+        caddy_config:
+      COMPOSE
+
+      if [ -n "$ACME_EMAIL" ]; then
+        cat > "$APP_DIR/Caddyfile" <<CADDY
+      {
+        email $ACME_EMAIL
+      }
+
+      $BACKEND_HOST {
+        encode gzip zstd
+
+        request_body {
+          max_size 500MB
+        }
+
+        @parser {
+          path / /health-check /ws /pose/*
+        }
+        reverse_proxy @parser parser:3000
+
+        @spring {
+          path /api/* /actuator/*
+        }
+        reverse_proxy @spring server:8090
+
+        respond "dekin backend" 200
+      }
+      CADDY
+      else
+        cat > "$APP_DIR/Caddyfile" <<CADDY
+      $BACKEND_HOST {
+        encode gzip zstd
+
+        request_body {
+          max_size 500MB
+        }
+
+        @parser {
+          path / /health-check /ws /pose/*
+        }
+        reverse_proxy @parser parser:3000
+
+        @spring {
+          path /api/* /actuator/*
+        }
+        reverse_proxy @spring server:8090
+
+        respond "dekin backend" 200
+      }
+      CADDY
+      fi
+
+      cat > /usr/local/bin/dekin-deploy <<'DEPLOY'
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      if [[ $# -lt 2 || $# -gt 3 ]]; then
+        echo "usage: dekin-deploy <server|parser> <image-ref> [ghcr-user]" >&2
+        exit 1
+      fi
+
+      component="$1"
+      image_ref="$2"
+      ghcr_user="$${3:-}"
+
+      case "$component" in
+        server|parser) ;;
+        *)
+          echo "unknown component: $component (expected server or parser)" >&2
+          exit 1
+          ;;
+      esac
+
+      if [[ "$image_ref" != *:* ]]; then
+        echo "image ref must include an explicit tag: $image_ref" >&2
+        exit 1
+      fi
+
+      app_dir="${app_dir}"
+      deploy_env="$app_dir/deploy.env"
+      compose=(docker compose --env-file "$app_dir/.env" --env-file "$deploy_env" -f "$app_dir/compose.yml")
+
+      update_env() {
+        local key="$1"
+        local value="$2"
+        local tmp
+        tmp="$(mktemp)"
+        chmod 600 "$tmp"
+        if [[ -f "$deploy_env" ]]; then
+          grep -v "^$${key}=" "$deploy_env" >> "$tmp" || true
+        fi
+        printf '%s=%s\n' "$key" "$value" >> "$tmp"
+        mv "$tmp" "$deploy_env"
+        chmod 600 "$deploy_env"
+      }
+
+      if [[ -n "$ghcr_user" && ! -t 0 ]]; then
+        ghcr_token="$(cat)"
+        if [[ -n "$ghcr_token" ]]; then
+          printf '%s' "$ghcr_token" | docker login ghcr.io --username "$ghcr_user" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+        fi
+      fi
+
+      case "$component" in
+        server)
+          update_env DEKIN_SERVER_IMAGE "$image_ref"
+          ;;
+        parser)
+          update_env DEKIN_PARSER_IMAGE "$image_ref"
+          ;;
+      esac
+
+      "$${compose[@]}" pull "$component"
+      "$${compose[@]}" up -d --wait --wait-timeout 180 "$component"
+      "$${compose[@]}" up -d caddy
+
+      echo "$component deploy complete (image: $image_ref)"
+      DEPLOY
+      chmod 0755 /usr/local/bin/dekin-deploy
+
+      cat > /etc/sudoers.d/dekin-deploy <<'SUDOERS'
+      deploy ALL=(root) NOPASSWD: /usr/local/bin/dekin-deploy server *, /usr/local/bin/dekin-deploy parser *
+      SUDOERS
+      chmod 0440 /etc/sudoers.d/dekin-deploy
+
+      ufw allow OpenSSH
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      ufw --force enable
+
+      cd "$APP_DIR"
+      docker compose --env-file "$APP_DIR/.env" --env-file "$APP_DIR/deploy.env" -f "$APP_DIR/compose.yml" up -d --wait --wait-timeout 300
+
+runcmd:
+  - [bash, /usr/local/bin/dekin-bootstrap.sh]
+
+final_message: "Dekin hosted backend bootstrap finished. Logs: /var/log/cloud-init-output.log"

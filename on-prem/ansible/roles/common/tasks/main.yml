@@ -1,0 +1,107 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+
+- name: Set timezone
+  ansible.builtin.timezone:
+    name: "{{ timezone }}"
+
+- name: Install NTP service
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+
+- name: Enable and start NTP service
+  ansible.builtin.systemd:
+    name: chrony
+    enabled: yes
+    state: started
+
+- name: Configure UFW default policies
+  community.general.ufw:
+    direction: incoming
+    default: deny
+
+- name: Configure UFW outgoing default
+  community.general.ufw:
+    direction: outgoing
+    default: allow
+
+- name: Allow SSH through UFW
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+
+- name: Configure UFW allowed ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto }}"
+    from_ip: "{{ item.from | default('any') }}"
+  loop: "{{ ufw_allowed_ports | default([]) }}"
+  when: ufw_allowed_ports is defined
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+- name: Check if swap file exists
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swap_file_check
+  when: enable_swap | default(false)
+
+- name: Create swap file
+  ansible.builtin.command:
+    cmd: dd if=/dev/zero of=/swapfile bs=1M count={{ swap_size_mb }}
+    creates: /swapfile
+  when: enable_swap | default(false) and not swap_file_check.stat.exists | default(false)
+
+- name: Set swap file permissions
+  ansible.builtin.file:
+    path: /swapfile
+    mode: '0600'
+    owner: root
+    group: root
+  when: enable_swap | default(false)
+
+- name: Make swap file
+  ansible.builtin.command:
+    cmd: mkswap /swapfile
+  when: enable_swap | default(false) and not swap_file_check.stat.exists | default(false)
+
+- name: Enable swap file
+  ansible.builtin.command:
+    cmd: swapon /swapfile
+  when: enable_swap | default(false) and not swap_file_check.stat.exists | default(false)
+
+- name: Add swap to fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: '/swapfile none swap sw 0 0'
+    state: present
+  when: enable_swap | default(false)
+
+- name: Disable password authentication for SSH
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: 'PasswordAuthentication no'
+    state: present
+  notify: restart sshd
+
+- name: Disable root login via SSH
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: 'PermitRootLogin no'
+    state: present
+  notify: restart sshd

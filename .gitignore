@@ -33,3 +33,9 @@ xunit.xml
 resources/contentCreator/createDevcontainer/.devcontainer
 resources/contentCreator/createDevfile/devfile-template.txt
 .direnv/
+
+# Terraform local state and machine-local config
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/terraform.tfvars

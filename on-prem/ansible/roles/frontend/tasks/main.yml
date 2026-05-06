@@ -1,0 +1,33 @@
+---
+- name: Create application base directory
+  ansible.builtin.file:
+    path: "{{ frontend_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0755'
+
+- name: Clone frontend repository
+  ansible.builtin.git:
+    repo: "{{ frontend_repo_url }}"
+    dest: "{{ frontend_dir }}/app"
+    version: "{{ frontend_repo_branch }}"
+    force: yes
+  become_user: "{{ deploy_user }}"
+  when: frontend_repo_url | length > 0
+
+- name: Create docker-compose.yml for frontend
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ frontend_dir }}/docker-compose.yml"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0644'
+  notify: restart frontend containers
+
+- name: Build and start frontend containers
+  community.docker.docker_compose_v2:
+    project_src: "{{ frontend_dir }}"
+    state: present
+    build: always
+  become_user: "{{ deploy_user }}"

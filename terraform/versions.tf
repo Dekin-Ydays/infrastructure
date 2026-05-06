@@ -1,10 +1,10 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.6.0"
 
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.100"
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -13,7 +13,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region  = var.region
-  profile = var.aws_profile
+provider "digitalocean" {
+  token = var.do_token
 }
