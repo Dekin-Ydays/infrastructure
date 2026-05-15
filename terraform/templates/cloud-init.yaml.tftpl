@@ -51,15 +51,6 @@ write_files:
         systemctl enable --now docker
       fi
 
-      if ! command -v caddy >/dev/null 2>&1; then
-        curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-          | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-        curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
-          > /etc/apt/sources.list.d/caddy-stable.list
-        apt-get update
-        apt-get install -y caddy
-      fi
-
       for attempt in $(seq 1 30); do
         [ -b "$VOLUME_DEV" ] && break
         sleep 2
@@ -78,8 +69,7 @@ write_files:
       fi
       mountpoint -q "$DATA_DIR" || mount "$DATA_DIR"
 
-      mkdir -p "$APP_DIR" "$DATA_DIR/postgres" "$DATA_DIR/minio" "$DATA_DIR/parser"
-      chmod 700 "$DATA_DIR/postgres"
+      mkdir -p "$APP_DIR" "$DATA_DIR/minio" "$DATA_DIR/parser"
       chmod 700 "$DATA_DIR/minio"
       chmod 777 "$DATA_DIR/parser"
 
@@ -94,9 +84,6 @@ write_files:
       cat > "$APP_DIR/.env" <<ENV
       BACKEND_HOST=$BACKEND_HOST
       FRONTEND_ORIGIN_PATTERNS=${frontend_origin_patterns}
-      DB_NAME=${db_name}
-      DB_USER=${db_user}
-      DB_PASSWORD=${db_password}
       MINIO_ACCESS_KEY=${minio_access_key}
       MINIO_SECRET_KEY=${minio_secret_key}
       MINIO_BUCKET=${minio_bucket}
@@ -106,28 +93,12 @@ write_files:
 
       cat > "$APP_DIR/deploy.env" <<ENV
       COMPOSE_PROJECT_NAME=${project}
-      DEKIN_SERVER_IMAGE=${server_image}
       DEKIN_PARSER_IMAGE=${parser_image}
       ENV
       chmod 600 "$APP_DIR/deploy.env"
 
       cat > "$APP_DIR/compose.yml" <<'COMPOSE'
       services:
-        postgres:
-          image: postgres:16-alpine
-          restart: unless-stopped
-          environment:
-            POSTGRES_DB: $${DB_NAME}
-            POSTGRES_USER: $${DB_USER}
-            POSTGRES_PASSWORD: $${DB_PASSWORD}
-          volumes:
-            - $${DATA_DIR}/postgres:/var/lib/postgresql/data
-          healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U $${DB_USER} -d $${DB_NAME}"]
-            interval: 10s
-            timeout: 5s
-            retries: 20
-
         minio:
           image: minio/minio:latest
           restart: unless-stopped
@@ -159,6 +130,8 @@ write_files:
             MINIO_BUCKET: $${MINIO_BUCKET}
             MINIO_REGION: "us-east-1"
             CORS_ORIGINS: $${FRONTEND_ORIGIN_PATTERNS}
+            MPLCONFIGDIR: "/tmp/matplotlib"
+            XDG_CACHE_HOME: "/tmp/.cache"
           depends_on:
             minio:
               condition: service_healthy
@@ -171,19 +144,6 @@ write_files:
             interval: 15s
             timeout: 5s
             retries: 20
-
-        server:
-          image: $${DEKIN_SERVER_IMAGE}
-          restart: unless-stopped
-          environment:
-            PORT: "8090"
-            DB_URL: "jdbc:postgresql://postgres:5432/$${DB_NAME}"
-            DB_USERNAME: $${DB_USER}
-            DB_PASSWORD: $${DB_PASSWORD}
-            APP_CORS_ALLOWED_ORIGIN_PATTERNS: $${FRONTEND_ORIGIN_PATTERNS}
-          depends_on:
-            postgres:
-              condition: service_healthy
 
         caddy:
           image: caddy:2-alpine
@@ -198,8 +158,6 @@ write_files:
           depends_on:
             parser:
               condition: service_healthy
-            server:
-              condition: service_started
 
       volumes:
         caddy_data:
@@ -220,16 +178,12 @@ write_files:
         }
 
         @parser {
-          path / /health-check /ws /pose/*
+          path / /health-check /ws* /pose/*
         }
-        reverse_proxy @parser parser:3000
-
-        @spring {
-          path /api/* /actuator/*
+        route {
+          reverse_proxy @parser parser:3000
+          respond "dekin video parser" 200
         }
-        reverse_proxy @spring server:8090
-
-        respond "dekin backend" 200
       }
       CADDY
       else
@@ -242,16 +196,12 @@ write_files:
         }
 
         @parser {
-          path / /health-check /ws /pose/*
+          path / /health-check /ws* /pose/*
         }
-        reverse_proxy @parser parser:3000
-
-        @spring {
-          path /api/* /actuator/*
+        route {
+          reverse_proxy @parser parser:3000
+          respond "dekin video parser" 200
         }
-        reverse_proxy @spring server:8090
-
-        respond "dekin backend" 200
       }
       CADDY
       fi
@@ -261,7 +211,7 @@ write_files:
       set -euo pipefail
 
       if [[ $# -lt 2 || $# -gt 3 ]]; then
-        echo "usage: dekin-deploy <server|parser> <image-ref> [ghcr-user]" >&2
+        echo "usage: dekin-deploy <parser> <image-ref> [ghcr-user]" >&2
         exit 1
       fi
 
@@ -270,9 +220,9 @@ write_files:
       ghcr_user="$${3:-}"
 
       case "$component" in
-        server|parser) ;;
+        parser) ;;
         *)
-          echo "unknown component: $component (expected server or parser)" >&2
+          echo "unknown component: $component (expected parser)" >&2
           exit 1
           ;;
       esac
@@ -309,9 +259,6 @@ write_files:
       fi
 
       case "$component" in
-        server)
-          update_env DEKIN_SERVER_IMAGE "$image_ref"
-          ;;
         parser)
           update_env DEKIN_PARSER_IMAGE "$image_ref"
           ;;
@@ -326,7 +273,7 @@ write_files:
       chmod 0755 /usr/local/bin/dekin-deploy
 
       cat > /etc/sudoers.d/dekin-deploy <<'SUDOERS'
-      deploy ALL=(root) NOPASSWD: /usr/local/bin/dekin-deploy server *, /usr/local/bin/dekin-deploy parser *
+      deploy ALL=(root) NOPASSWD: /usr/local/bin/dekin-deploy parser *
       SUDOERS
       chmod 0440 /etc/sudoers.d/dekin-deploy
 
@@ -336,9 +283,10 @@ write_files:
       ufw --force enable
 
       cd "$APP_DIR"
+      docker compose --env-file "$APP_DIR/.env" --env-file "$APP_DIR/deploy.env" -f "$APP_DIR/compose.yml" pull
       docker compose --env-file "$APP_DIR/.env" --env-file "$APP_DIR/deploy.env" -f "$APP_DIR/compose.yml" up -d --wait --wait-timeout 300
 
 runcmd:
   - [bash, /usr/local/bin/dekin-bootstrap.sh]
 
-final_message: "Dekin hosted backend bootstrap finished. Logs: /var/log/cloud-init-output.log"
+final_message: "Dekin video parser bootstrap finished. Logs: /var/log/cloud-init-output.log"

@@ -4,7 +4,6 @@ locals {
   normalized_backend_host  = trimspace(var.backend_hostname)
   backend_host             = local.normalized_backend_host != "" ? local.normalized_backend_host : "${digitalocean_droplet.app.ipv4_address}.sslip.io"
   backend_url              = "https://${local.backend_host}"
-  db_password              = coalesce(var.db_password, random_password.db.result)
   minio_secret_key         = coalesce(var.minio_secret_key, random_password.minio_secret.result)
   frontend_origin_patterns = join(",", var.frontend_origin_patterns)
   data_volume_name         = "${var.project}-data"
@@ -15,9 +14,6 @@ locals {
     backend_hostname         = local.normalized_backend_host
     data_dir                 = local.data_dir
     data_volume_name         = local.data_volume_name
-    db_name                  = var.db_name
-    db_password              = local.db_password
-    db_user                  = var.db_user
     deploy_ssh_public_key    = var.deploy_ssh_public_key
     frontend_origin_patterns = local.frontend_origin_patterns
     minio_access_key         = var.minio_access_key
@@ -25,7 +21,6 @@ locals {
     minio_secret_key         = local.minio_secret_key
     parser_image             = var.parser_image
     project                  = var.project
-    server_image             = var.server_image
     swap_size_mb             = var.swap_size_mb
   })
 
@@ -36,27 +31,22 @@ locals {
   ]
 }
 
-resource "random_password" "db" {
-  length  = 24
-  special = false
-}
-
 resource "random_password" "minio_secret" {
   length  = 32
   special = false
 }
 
-resource "digitalocean_project" "this" {
-  name        = var.project
-  description = "Hosted Dekin backend runtime."
-  purpose     = "Web Application"
-  environment = "Production"
-  resources   = [digitalocean_droplet.app.urn]
+data "digitalocean_project" "this" {
+  name = var.digitalocean_project_name
 }
 
-resource "digitalocean_ssh_key" "admin" {
-  name       = "${var.project}-admin"
-  public_key = file(pathexpand(var.ssh_public_key_path))
+data "digitalocean_ssh_key" "admin" {
+  name = var.digitalocean_ssh_key_name
+}
+
+resource "digitalocean_project_resources" "this" {
+  project   = data.digitalocean_project.this.id
+  resources = [digitalocean_droplet.app.urn]
 }
 
 resource "digitalocean_volume" "data" {
@@ -72,11 +62,15 @@ resource "digitalocean_droplet" "app" {
   image      = var.droplet_image
   region     = var.region
   size       = var.droplet_size
-  ssh_keys   = [digitalocean_ssh_key.admin.fingerprint]
+  ssh_keys   = [data.digitalocean_ssh_key.admin.fingerprint]
   monitoring = true
   tags       = local.tags
   user_data  = local.cloud_init
   volume_ids = [digitalocean_volume.data.id]
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }
 
 resource "digitalocean_firewall" "app" {

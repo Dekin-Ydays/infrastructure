@@ -1,5 +1,5 @@
 variable "do_token" {
-  description = "DigitalOcean API token. Prefer DIGITALOCEAN_TOKEN in the environment instead of setting this."
+  description = "DigitalOcean API token. Set this as a sensitive Terraform variable in HCP Terraform."
   type        = string
   default     = null
   sensitive   = true
@@ -9,6 +9,12 @@ variable "project" {
   description = "Project/resource name prefix."
   type        = string
   default     = "dekin-hosted"
+}
+
+variable "digitalocean_project_name" {
+  description = "Existing DigitalOcean project that receives the hosted resources."
+  type        = string
+  default     = "dekin"
 }
 
 variable "region" {
@@ -29,10 +35,10 @@ variable "droplet_image" {
   default     = "ubuntu-24-04-x64"
 }
 
-variable "ssh_public_key_path" {
-  description = "Path to the admin SSH public key authorized on the Droplet."
+variable "digitalocean_ssh_key_name" {
+  description = "Existing DigitalOcean account SSH key used for admin/root access to the Droplet."
   type        = string
-  default     = "~/.ssh/id_ed25519.pub"
+  default     = "dekin"
 }
 
 variable "deploy_ssh_public_key" {
@@ -66,7 +72,7 @@ variable "acme_email" {
 }
 
 variable "data_volume_size_gb" {
-  description = "Persistent volume size for Postgres, MinIO, and parser SQLite data."
+  description = "Persistent volume size for MinIO and parser SQLite data."
   type        = number
   default     = 10
 
@@ -76,45 +82,20 @@ variable "data_volume_size_gb" {
   }
 }
 
-variable "server_image" {
-  description = "Initial Spring server image pulled on first boot. CI deploys replace this tag."
-  type        = string
-}
-
 variable "parser_image" {
   description = "Initial video-parser image pulled on first boot. CI deploys replace this tag."
   type        = string
 }
 
 variable "frontend_origin_patterns" {
-  description = "Browser origins allowed to call the Spring API and parser. Supports wildcard host patterns after the app changes in this feature."
+  description = "Exact browser origins allowed to call the parser."
   type        = list(string)
   default = [
-    "https://*.vercel.app",
     "http://localhost:3000",
     "http://localhost:8081",
     "http://localhost:8082",
     "http://localhost:19006",
   ]
-}
-
-variable "db_name" {
-  description = "PostgreSQL database name."
-  type        = string
-  default     = "jwt_security"
-}
-
-variable "db_user" {
-  description = "PostgreSQL user."
-  type        = string
-  default     = "postgres"
-}
-
-variable "db_password" {
-  description = "Optional PostgreSQL password. If null, Terraform generates one."
-  type        = string
-  default     = null
-  sensitive   = true
 }
 
 variable "minio_access_key" {

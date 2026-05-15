@@ -37,7 +37,6 @@ output "vercel_environment" {
 output "health_checks" {
   description = "Public health check URLs."
   value = {
-    spring = "${local.backend_url}/actuator/health"
     parser = "${local.backend_url}/pose/health"
   }
 }
