@@ -39,3 +39,7 @@ resources/contentCreator/createDevfile/devfile-template.txt
 **/*.tfstate
 **/*.tfstate.*
 **/terraform.tfvars
+
+# Terraform plan files
+**/tfplan
+**/*.tfplan
