@@ -2,7 +2,7 @@
   description = "Dekin Infrastructure Development Shell";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -12,18 +12,12 @@
     flake-utils,
   }:
     flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = import nixpkgs {
-        inherit system;
-        config.allowUnfreePredicate = pkg:
-          builtins.elem (nixpkgs.lib.getName pkg) [
-            "terraform"
-          ];
-      };
+      pkgs = import nixpkgs {inherit system;};
     in {
       devShells.default = pkgs.mkShell {
         packages = [
-          pkgs.ansible
-          pkgs.terraform
+          pkgs.nodejs_24
+          pkgs.bun
         ];
       };
     });

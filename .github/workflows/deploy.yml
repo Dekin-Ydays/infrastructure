@@ -1,0 +1,49 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Alchemy stage to deploy
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - prod
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.stage }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      STAGE: ${{ inputs.stage }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      GITHUB_ACCESS_TOKEN: ${{ secrets.ALCHEMY_GITHUB_TOKEN }}
+      WORKERS_SUBDOMAIN: ${{ vars.WORKERS_SUBDOMAIN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - name: Deploy
+        run: bunx alchemy deploy --stage "$STAGE" --yes
